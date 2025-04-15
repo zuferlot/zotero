@@ -1,0 +1,89 @@
+(async function() {
+    // 1. 获取 Zotero 中选中的条目
+    let items = ZoteroPane.getSelectedItems();
+    if (items.length === 0) return "请先在 Zotero 中选择文献";
+
+    async function summarizeText(text) {
+        const apiKey = 'sk-bzzvmcgpmaptfshftlaceioevemrasbmkddttoafmwjpnlpt';
+        const prompt = `请阅读以下内容，详细总结其内容，包括背景、方法、实验过程、数据分析、结果、实验意义等内容,尊重文本事实，不随意捏造内容:\n\n${text}\n\n摘要:`;
+        const requestData = {
+            model: "Qwen/QwQ-32B",
+            messages: [
+                { role: "user", content: prompt }
+            ],
+            stream: false,
+            max_tokens: 16384,
+            stop: null,
+            temperature: 0.5,
+            top_p: 0.7,
+            top_k: 50,
+            frequency_penalty: 0.5,
+            n: 1,
+            response_format: { type: "text" }
+        };
+
+        try {
+            const response = await fetch('https://api.siliconflow.cn/v1/chat/completions', {
+                method: 'POST',
+                headers: {
+                    'Authorization': `Bearer ${apiKey}`,
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify(requestData)
+            });
+
+            if (!response.ok) {
+                throw new Error(`HTTP error! status: ${response.status}`);
+            }
+
+            const json = await response.json();
+            return json.choices[0]?.message?.content?.trim() || json.choices[0]?.text?.trim() || "摘要生成失败";
+        } catch (error) {
+            console.error("API请求出错:", error);
+            return "API请求出错: " + error.message;
+        }
+    }
+
+    let docs = [];
+    for (let item of items) {
+        try {
+            let att = await item.getBestAttachment();
+            if (att && att.isPDFAttachment()) {
+                let fullText = (await Zotero.PDFWorker.getFullText(att.id)).text;
+                fullText = fullText.replace(/[^\w\u4e00-\u9fa5\s，。、；：？！'"“”‘’\-—]/g, '');
+                // 截取前两万个字符
+                fullText = fullText.substring(0, 15000);
+
+                let abstract = item.getField("abstractNote") || "无摘要";
+
+                let summary = await summarizeText(fullText);
+
+                docs.push({
+                    author: item.firstCreator || "未知作者",
+                    year: item.getField("year") || "未注明年份",
+                    title: item.getDisplayTitle(),
+                    abstract: abstract,
+                    fullText: summary
+                });
+            }
+        } catch (e) {
+            console.error("处理文献出错:", e);
+        }
+    }
+
+    // 将 Zotero 条目转换为文档对象
+    const docObjects = Meet.Zotero.items2documents(items);
+
+    // 在 Meet 全局视图中插入这些文档
+    Meet.Global.views.insertAuxiliary(docObjects);
+
+    // 对每个文档进行处理，将其内容按特定格式拼接成字符串
+    const formattedDocString = docs.map(
+        (doc, index) => "[" + String(index + 1) + "]" + " " +  doc.fullText
+    ).join("\n\n");
+
+    return {
+        jsonData: JSON.stringify(docs, null, 2),
+        formattedDocString: formattedDocString
+    };
+})();    
